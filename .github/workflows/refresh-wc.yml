@@ -1,0 +1,57 @@
+name: Refrescar datos del Mundial
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # cada 30 minutos
+  workflow_dispatch: {}        # permite ejecutarlo manualmente
+
+# Permite al workflow hacer commit del snapshot actualizado
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-wc
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Descargar datos de worldcup26.ir (con curl + reintentos)
+        run: |
+          fetch() {
+            for i in 1 2 3 4 5 6; do
+              curl -sL --max-time 20 \
+                -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+                "https://worldcup26.ir$1" -o "$2" && \
+              head -c1 "$2" | grep -q '{' && return 0
+              sleep 3
+            done
+            return 1
+          }
+          fetch /get/teams    /tmp/teams.json    || { echo "teams fallo"; exit 1; }
+          fetch /get/games    /tmp/games.json    || { echo "games fallo"; exit 1; }
+          fetch /get/groups   /tmp/groups.json   || { echo "groups fallo"; exit 1; }
+          fetch /get/stadiums /tmp/stadiums.json || echo "stadiums opcional fallo"
+
+      - name: Construir snapshot
+        run: node scripts/build-fallback.mjs
+
+      - name: Commit si cambió
+        run: |
+          git config user.name "wc-data-bot"
+          git config user.email "bot@users.noreply.github.com"
+          if ! git diff --quiet src/data/wc-fallback.json; then
+            git add src/data/wc-fallback.json
+            git commit -m "chore: refrescar datos del Mundial [skip ci]"
+            git push
+            echo "Datos actualizados y publicados."
+          else
+            echo "Sin cambios en los datos."
+          fi
